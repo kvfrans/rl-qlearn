@@ -35,10 +35,12 @@ class Q_Conv():
         # vector of size [timesteps]
         self.return_in = tf.placeholder(tf.float32,[None])
         guessed_action_value = tf.reduce_sum(self.estimated_values * self.action_in, reduction_indices=1)
-        loss = tf.nn.l2_loss(guessed_action_value - self.return_in)
-        self.debug = loss
+        delta = guessed_action_value - self.return_in
+        clipped_delta = tf.clip_by_value(delta,-1,1)
+        loss = tf.reduce_mean(tf.square(clipped_delta))
+        self.debug = delta
         self.learning_rate = tf.placeholder(tf.float32)
-        self.optimizer = tf.train.GradientDescentOptimizer(self.learning_rate).minimize(loss)
+        self.optimizer = tf.train.RMSPropOptimizer(self.learning_rate, momentum=0.95, epsilon=0.01).minimize(loss)
 
     def conv2d(self, x, inputFeatures, outputFeatures, filtersize, stride, name):
         with tf.variable_scope(name):
@@ -85,42 +87,95 @@ def learn(env, args):
 
     sess.run(tf.initialize_all_variables())
 
-    transitions = []
+    total_transitions = 0
+    transitions_observations = []
+    transitions_actions = []
+    transitions_rewards = []
+    transitions_isdone = []
     epsilon = 1
     finished_learning = False
     for episode in xrange(args.episodes):
-        previous_observations = []
-        partial_observation = env.reset()
+        previous_observations = np.zeros((84,84,args.history))
+        start_observation = env.reset()
+        previous_observations[:,:,0] = preprocess(start_observation)
+        epsilon = epsilon * args.epsilon_decay
 
         for step in xrange(args.maxframes + 1):
             env.render()
             action = None
-            if step >= args.history:
-                full_observation = np.moveaxis(np.asarray(previous_observations),0,-1)
-                action = model.getAction(full_observation)
-            else:
+            if step < args.history or random.uniform(0,1) < epsilon:
                 action = env.action_space.sample()
+            else:
+                action = model.getAction(previous_observations)
 
-            partial_observation, reward, done, info = env.step(action)
 
-            # RBG 210 x 160 -> grayscale 84x84 as per the DQN paper
-            partial_observation = np.dot(partial_observation,[0.299, 0.587, 0.114])
-            partial_observation = misc.imresize(partial_observation,(84,84),"bilinear")
+            old_observation = previous_observations[:,:,min(step,args.history-1)]
+            next_observation, reward, done, info = env.step(action)
 
-            previous_observations.append(partial_observation)
+            debug_predicted = np.amax(model.getValues(previous_observations),axis=1)
+            print debug_predicted.shape
+            print "e: %f took a step w/ action %d and got reward %d pred: %f" % (epsilon, action, reward, debug_predicted)
 
-            # once enough steps passed to fill up history
-            if step >= args.history:
-                previous_observations.pop(0)
+            # add current observation to the transitions
+            transitions_observations.append(old_observation)
+            transitions_actions.append(action)
+            transitions_rewards.append(reward)
+            transitions_isdone.append(done)
+            total_transitions = total_transitions + 1
+            # keep replay memory within a certain limit
+            if total_transitions > args.memory_size:
+                transitions.pop(0)
 
-                # train
-                observation_history = np.zeros((0,84,84,4))
-                action_history = np.zeros((0,num_actions))
-                TQ_history = np.array(())
+            # enough transitions stored in replay memory
+            if total_transitions >= args.batchsize:
+                observation_batch = np.zeros((args.batchsize,84,84,4))
+                action_batch = np.zeros((args.batchsize,num_actions))
+                next_observation_batch = np.zeros((args.batchsize,84,84,4))
+                TQ_batch = np.zeros(args.batchsize)
+                done_batch = np.zeros(args.batchsize)
 
-                for _ in xrange(args.batchsize):
-                    index = random.
+                for batch_iter in xrange(args.batchsize):
+                    replay_step = random.randint(3,total_transitions-2)
+                    replay_observation = transitions_observations[replay_step-3:replay_step+1]
+                    replay_observation_array = np.moveaxis(np.asarray(replay_observation),0,-1)
+                    observation_batch[batch_iter] = replay_observation_array
+
+                    action_onehot = np.zeros(num_actions)
+                    action_onehot[transitions_actions[replay_step]] = 1.0
+                    action_batch[batch_iter] = action_onehot
+
+                    replay_next_observation = transitions_observations[replay_step-2:replay_step+2]
+                    replay_next_observation_array = np.moveaxis(np.asarray(replay_next_observation),0,-1)
+                    next_observation_batch[batch_iter] = replay_next_observation_array
+
+                    TQ_batch[batch_iter] = transitions_rewards[batch_iter]
+                    done_batch[batch_iter] = 1.0 - transitions_isdone[batch_iter]
+
+                next_state_values = np.multiply(np.amax(model.getBatchValues(next_observation_batch),axis=1), done_batch)
+                print "one train"
+                print next_state_values
+                TQ_batch = TQ_batch + args.discount*next_state_values
+                print TQ_batch
+                # TQ_batch = np.zeros(args.batchsize)
+
+                model.update(observation_batch, action_batch, TQ_batch, 0.0001)
 
 
             if done:
                 break
+
+            # Preprocess next observation and add it to the previous_observations list
+            # RBG 210 x 160 -> grayscale 84x84 as per the DQN paper
+
+            next_observation = preprocess(next_observation)
+            if step < args.history:
+                previous_observations[:,:,step] = next_observation
+            else:
+                previous_observations[:,:,0:args.history-1] = previous_observations[:,:,1:args.history]
+                previous_observations[:,:,args.history-1] = next_observation
+
+
+def preprocess(observation):
+    observation = np.dot(observation,[0.299, 0.587, 0.114])
+    observation = misc.imresize(observation,(84,84),"bilinear")
+    return observation

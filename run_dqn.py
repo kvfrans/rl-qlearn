@@ -15,7 +15,7 @@ if __name__ == "__main__":
     parser.add_argument("--training_iterations", type=int, default=50, help="how many times to train per episode")
     parser.add_argument("--updaterate", type=int, default=16, help="when to swap frozen and updated models")
     parser.add_argument("--epsilon_decay", type=float, default=0.99, help="scale down factor for epsilon-greedy")
-    parser.add_argument("--memory_size", type=int, default=300, help="memory size for experience replay")
+    parser.add_argument("--memory_size", type=int, default=10000, help="memory size for experience replay")
     parser.add_argument("--learningrate", type=float, default=0.0001, help="learning rate")
     parser.add_argument("--learningrate_decay", type=int, default=0.9995, help="decay learningrate by multiply")
     parser.add_argument("--history", type=int, default=4, help="how many pastframes to use")
